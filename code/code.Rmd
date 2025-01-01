@@ -1,0 +1,179 @@
+---
+title: "TCGA-PAAD expression analysis"
+output: html_notebook
+---
+
+```{r}
+# Set your working directory
+setwd("C:/Users/varsh/Desktop/Shanu/Genomics course/project1")
+
+#----------Step 1: Data Acquisition-----------
+
+# Load the necessary packages
+library(TCGAbiolinks)
+library(sesameData)
+library(SummarizedExperiment)
+library(edgeR)
+library(gplots)
+library(ggplot2)
+library(biomaRt)
+library(reshape2)
+library(org.Hs.eg.db)
+
+# Get project summary
+getProjectSummary("TCGA-PAAD")
+
+# Define the query for TCGA-PAAD RNA-Seq data
+query <- GDCquery(project = "TCGA-PAAD",
+                  data.category = "Transcriptome Profiling",
+                  data.type = "Gene Expression Quantification")
+
+# Download and prepare the data
+GDCdownload(query)
+paad.data <- GDCprepare(query)
+
+head(paad.data)
+View(paad.data)
+
+# Check the tissue types of the PAAD samples
+table(paad.data$tissue_type)
+table(paad.data$ajcc_pathologic_stage)
+
+# Obtain the metadata
+metadata <- data.frame("Barcode"= paad.data$barcode, "Tissue" = paad.data$tissue_type, "Stage" = paad.data$ajcc_pathologic_stage)
+View(metadata)
+write.csv(metadata, file ="metadata.csv", row.names =TRUE)
+
+# Filter for early-stage (stage 1) pancreatic cancer samples and normal tissue samples
+early_stage_samples <- subset(metadata, Tissue == "Tumor" & (Stage == "Stage I" | Stage == "Stage IA" | Stage == "Stage IB"))
+normal_samples <- subset(metadata, Tissue == "Normal")
+
+# Combine both sets of samples
+selected_samples <- rbind(early_stage_samples, normal_samples)
+View(selected_samples)
+write.csv(selected_samples, file ="selected_samples.csv", row.names =TRUE)
+
+# Obtain the barcodes of the selected samples
+selected_barcodes <- selected_samples$Barcode
+write.csv(selected_barcodes, file ="selected_barcodes.csv", row.names =TRUE)
+
+
+```
+
+```{r}
+#----------Step 2: Data Preprocessing-------------
+
+# Select the unstranded data
+paad.raw.data <- assays(paad.data)
+dim(paad.raw.data$unstranded)
+
+# Obtain the unstranded data of the selected samples
+selectedData <- paad.raw.data$unstranded[,c(selected_barcodes)]
+dim(selectedData)
+
+# Data normalization 
+normData <- TCGAanalyze_Normalization(tabDF = selectedData, geneInfo = geneInfoHT, method = "geneLength")
+dim(normData)
+
+# Data filtering
+filtData <- TCGAanalyze_Filtering(tabDF = normData, method = "quantile", qnt.cut = 0.25)
+dim(filtData)
+
+write.csv(filtData, file ="filtered_data.csv", row.names =TRUE)
+
+
+```
+
+```{r}
+#-------Step 3: Differential Expression Analysis (DEA)----------
+
+# Perform DEA between the tumor and normal samples
+tumor_metadata <- selected_samples[selected_samples$Tissue == 'Tumor',]
+normal_metadata <- selected_samples[selected_samples$Tissue == 'Normal',]
+
+selectResults<-TCGAanalyze_DEA(mat1 = filtData[, c(selected_barcodes)[1:21]], #1st group is pancreatic cancer tumors
+                               mat2 = filtData[, c(selected_barcodes)[22:25]], #2nd group is normal samples
+                               Cond1type = "Tumor", #Defining condition 1
+                               Cond2type = "Normal", #Defining condition 2
+                               pipeline = "edgeR")
+dim(selectResults)  
+
+# Differential expression levels for the different conditions
+selectResults.levels <- TCGAanalyze_LevelTab(selectResults,"Tumor" ,"Normal", 
+                                             filtData[,c(selected_barcodes)[1:21]],
+                                             filtData[,c(selected_barcodes)[22:25]])
+
+dim(selectResults.levels)
+
+# Set the logFC and p-value filter
+selectResults.levels$diff_exp <- "No"
+selectResults.levels$diff_exp[selectResults.levels$logFC > 1.5 & selectResults.levels$FDR <0.01] <-"UP"
+selectResults.levels$diff_exp[selectResults.levels$logFC < (-1.5) & selectResults.levels$FDR <0.01] <-"DOWN"
+
+table(selectResults.levels$diff_exp)
+
+# Obtain the gene names as gene symbols
+converted_gene_names<- mapIds(org.Hs.eg.db, 
+                              keys = selectResults.levels$mRNA, 
+                              column = "SYMBOL", 
+                              keytype = "ENSEMBL", 
+                              multiVals = "first")
+
+# Merge the conversion results back to the original dataframe
+selectResults.levels$gene<-converted_gene_names
+# Assign ensemble IDs to genes without gene names
+selectResults.levels$gene <- ifelse(is.na(selectResults.levels$gene), selectResults.levels$mRNA, selectResults.levels$gene)
+sum(is.na(selectResults.levels$gene))
+
+write.csv(selectResults.levels, file ="All_DGEA_results.csv", row.names = TRUE)
+
+
+# Obtain the list of significant DEGs 
+DE_results <- selectResults.levels[selectResults.levels$diff_exp == "UP" | selectResults.levels$diff_exp == "DOWN",]
+
+write.csv(DE_results, file ="Sig_DGEA_results.csv", row.names =TRUE)
+
+# Obtain the upregulated and downregulated genes
+upreg.genes <- rownames(subset(selectResults.levels[selectResults.levels$diff_exp =='UP',]))
+dnreg.genes <- rownames(subset(selectResults.levels[selectResults.levels$diff_exp =='DOWN',]))
+
+write.csv(upreg.genes, "upregulated_genes.csv", row.names = TRUE)
+write.csv(dnreg.genes, "downregulated_genes.csv", row.names = TRUE)
+
+upreg_gene_symbols <- selectResults.levels$gene[selectResults.levels$diff_exp =='UP']
+dnreg_gene_symbols <- selectResults.levels$gene[selectResults.levels$diff_exp =='DOWN']
+
+write.csv(upreg_gene_symbols, "upregulated_gene_symbols.csv", row.names = TRUE)
+write.csv(dnreg_gene_symbols, "downregulated_gene_symbols.csv", row.names = TRUE)
+
+```
+
+```{r}
+#-------Step 4: Functional Enrichment Analysis (FEA)----------
+
+up.EA <- TCGAanalyze_EAcomplete(TFname = "Upregulated", upreg_gene_symbols) # produces result based on BP, CC, MF and Pathways(P)
+dn.EA <- TCGAanalyze_EAcomplete(TFname = "Downregulated", dnreg_gene_symbols)
+
+# Visualization
+EAbarplot_upreg_genes <- (TCGAvisualize_EAbarplot(tf = rownames(up.EA$ResBP), #Row names
+                                                  GOBPTab = up.EA$ResBP, #results for BP
+                                                  GOMFTab = up.EA$ResMF, #results for MF
+                                                  GOCCTab = up.EA$ResCC, #results for CC
+                                                  PathTab = up.EA$ResPat, #results for Pathway
+                                                  nRGTab = upreg_gene_symbols, #number of genes in the list
+                                                  nBar = 5, #max number of bars is 5 but can be increased to 10
+                                                  text.size = 2, # 2 
+                                                  fig.width = 30, # size of figure
+                                                  fig.height = 15)) #generates a pdf in the working directory
+
+EAbarplot_downreg_genes <- (TCGAvisualize_EAbarplot(tf = rownames(dn.EA$ResBP),
+                                                    GOBPTab = dn.EA$ResBP, 
+                                                    GOMFTab = dn.EA$ResMF, 
+                                                    GOCCTab = dn.EA$ResCC, 
+                                                    PathTab = dn.EA$ResPat, 
+                                                    nRGTab = dnreg_gene_symbols, 
+                                                    nBar = 5, 
+                                                    text.size = 2, 
+                                                    fig.width = 30,
+                                                    fig.height = 15))
+```
