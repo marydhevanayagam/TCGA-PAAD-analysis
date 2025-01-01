@@ -5,7 +5,7 @@ output: html_notebook
 
 ```{r}
 # Set your working directory
-setwd("C:/Users/varsh/Desktop/Shanu/Genomics course/project1")
+setwd("")
 
 #----------Step 1: Data Acquisition-----------
 
