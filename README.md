@@ -6,7 +6,7 @@ In this project, RNA-seq data for pancreatic cancer (PAAD) from The Cancer Genom
 
 ## 2. **GitHub repository folders**
 
-* Code \- contains the R script of the code for data preprocessing, differential expression analysis (DEA), and functional enrichment analysis (FEA). 
+* Code \- contains the R code for data preprocessing, differential expression analysis (DEA), and functional enrichment analysis (FEA). 
 * Data \- contains the data obtained after pre-processing.  
 * Results \- contains the results generated from DEA and FEA.  
 
